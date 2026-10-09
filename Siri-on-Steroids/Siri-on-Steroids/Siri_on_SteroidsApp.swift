@@ -1,9 +1,3 @@
-//
-//  Siri_on_SteroidsApp.swift
-//  Siri-on-Steroids
-//
-//  Created by Karthikeyan on 08/10/2026.
-//
 
 import SwiftUI
 import AppKit
@@ -11,8 +5,9 @@ import AppKit
 @main
 struct Siri_on_SteroidsApp: App {
 
-    private let appController =
-        AppController()
+    private let appController = AppController()
+
+    @State private var isAssistantVisible = false
 
     var body: some Scene {
 
@@ -21,45 +16,27 @@ struct Siri_on_SteroidsApp: App {
             systemImage: "waveform"
         ) {
 
-            Button("Show Assistant") {
+            Button(isAssistantVisible ? "Hide Assistant" : "Show Assistant") {
 
-                appController
-                    .overlayManager
-                    .show()
-            }
+                if isAssistantVisible {
+                    appController.overlayManager.hide()
+                } else {
+                    appController.overlayManager.show()
+                }
 
-            Button("Hide Assistant") {
-
-                appController
-                    .overlayManager
-                    .hide()
-            }
-
-            Divider()
-
-            Button("Agent Mode") {
-
-                print(
-                    "Agent mode selected"
-                )
+                isAssistantVisible.toggle()
             }
 
             Button("Settings") {
-
-                print(
-                    "Settings selected"
-                )
+                print("Settings selected")
             }
 
             Divider()
 
             Button("Quit") {
-
                 appController.quit()
             }
         }
-        .menuBarExtraStyle(
-            .menu
-        )
+        .menuBarExtraStyle(.menu)
     }
 }

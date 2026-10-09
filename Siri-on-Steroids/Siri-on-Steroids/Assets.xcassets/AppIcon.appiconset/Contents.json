@@ -1,58 +1,60 @@
 {
   "images" : [
     {
+      "filename" : "Logo-macOS-Default-16@1x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "16x16"
     },
     {
+      "filename" : "Logo-macOS-Default-32@1x.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "16x16"
     },
     {
+      "filename" : "Logo-macOS-Default-32@1x 1.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "32x32"
     },
     {
-      "filename" : "logo 5.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "32x32"
     },
     {
-      "filename" : "logo 4.png",
+      "filename" : "Logo-macOS-Default-128@1x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "128x128"
     },
     {
-      "filename" : "logo 3.png",
+      "filename" : "Logo-macOS-Default-256@1x 1.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "128x128"
     },
     {
-      "filename" : "LOGO.jpg",
+      "filename" : "Logo-macOS-Default-256@1x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "256x256"
     },
     {
-      "filename" : "LOGO 2.png",
+      "filename" : "Logo-macOS-Default-512@1x.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "256x256"
     },
     {
-      "filename" : "LOGO 1.png",
+      "filename" : "Logo-macOS-Default-512@1x 1.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "512x512"
     },
     {
-      "filename" : "LOGO.png",
+      "filename" : "Logo-macOS-Default-1024@1x.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "512x512"

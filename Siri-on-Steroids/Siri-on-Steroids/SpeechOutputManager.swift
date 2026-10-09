@@ -5,409 +5,485 @@
 //  Created by Karthikeyan on 08/10/2026.
 //
 
+
 import AVFoundation
+import Foundation
 
-final class SpeechOutputManager: NSObject {
+final class SpeechOutputManager: NSObject, AVAudioPlayerDelegate {
 
-    // Keep all speech-engine operations on their own queue.
-    private let speechQueue =
-        DispatchQueue(
-            label: "com.siri-on-steroids.speech",
-            qos: .utility
-        )
+    private let speechQueue = DispatchQueue(
+        label: "com.siri-on-steroids.speech",
+        qos: .userInitiated
+    )
 
-    private let synthesizer =
-        AVSpeechSynthesizer()
+    private let baseURL = URL(
+        string: "http://127.0.0.1:17493"
+    )!
 
-    private var completionHandler:
-        (() -> Void)?
+    private let profileID =
+        "c45bdce5-683e-4c7e-9f54-4aad8b2bc1a1"
 
-    private var speechGeneration =
-        0
+    private var audioPlayer: AVAudioPlayer?
+    private var completionHandler: (() -> Void)?
+    private var speechGeneration = 0
 
-    override init() {
+    private let session = URLSession.shared
 
-        super.init()
-
-        synthesizer.delegate =
-            self
+    private struct SpeakResponse: Decodable {
+        let id: String
+        let status: String
     }
 
-    // MARK: Speak
+    private struct GenerationStatus: Decodable {
+        let id: String
+        let status: String
+        let error: String?
+    }
+
+    override init() {
+        super.init()
+    }
+
+    // MARK: - Speak
 
     func speak(
         _ text: String,
-        completion:
-            (() -> Void)? = nil
+        completion: (() -> Void)? = nil
     ) {
-
-        let cleanedText =
-            cleanTextForSpeech(
-                text
-            )
+        let cleanedText = cleanTextForSpeech(text)
 
         guard !cleanedText.isEmpty else {
-
             DispatchQueue.main.async {
                 completion?()
             }
-
             return
         }
 
         speechQueue.async { [weak self] in
-
-            guard let self else {
-                return
-            }
+            guard let self else { return }
 
             self.speechGeneration += 1
+            let generation = self.speechGeneration
 
-            let generation =
-                self.speechGeneration
+            self.audioPlayer?.stop()
+            self.audioPlayer = nil
+            self.completionHandler = completion
 
-            // If another utterance is already
-            // speaking, cancel it first.
-            if self.synthesizer.isSpeaking {
-
-                self.completionHandler =
-                    nil
-
-                self.synthesizer.stopSpeaking(
-                    at: .immediate
-                )
-            }
-
-            self.completionHandler =
-                completion
-
-            let utterance =
-                AVSpeechUtterance(
-                    string:
-                        cleanedText
-                )
-
-            // Natural conversational speed.
-            utterance.rate =
-                0.48
-
-            utterance.pitchMultiplier =
-                1.0
-
-            utterance.volume =
-                1.0
-
-            // Prefer Alex.
-            if let alex =
-                AVSpeechSynthesisVoice(
-                    identifier:
-                        "com.apple.speech.voice.Alex"
-                ) {
-
-                utterance.voice =
-                    alex
-
-            } else {
-
-                utterance.voice =
-                    AVSpeechSynthesisVoice(
-                        language:
-                            "en-US"
-                    )
-            }
-
-            print(
-                "TTS:",
-                cleanedText
+            self.requestSpeech(
+                cleanedText,
+                generation: generation
             )
-
-            print(
-                "TTS VOICE:",
-                utterance.voice?.name
-                    ?? "Unknown"
-            )
-
-            self.synthesizer.speak(
-                utterance
-            )
-
-            // Keep the generation referenced so
-            // the operation has a stable identity.
-            _ = generation
         }
     }
 
-    // MARK: Stop
+    // MARK: - Request Voicebox Speech
+
+    private func requestSpeech(
+        _ text: String,
+        generation: Int
+    ) {
+        guard generation == speechGeneration else { return }
+
+        let url = baseURL.appendingPathComponent("speak")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.timeoutInterval = 30
+
+        let body: [String: Any] = [
+            "text": text,
+            "profile": profileID,
+            "engine": "kokoro",
+            "personality": false,
+            "language": "en"
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: body
+            )
+        } catch {
+            finishWithError(
+                "Could not encode Voicebox request: \(error)",
+                generation: generation
+            )
+            return
+        }
+
+        print("Voicebox request:", text)
+
+        session.dataTask(with: request) {
+            [weak self] data, response, error in
+
+            guard let self else { return }
+
+            self.speechQueue.async {
+                guard generation == self.speechGeneration else {
+                    return
+                }
+
+                if let error {
+                    self.finishWithError(
+                        "Voicebox request failed: \(error)",
+                        generation: generation
+                    )
+                    return
+                }
+
+                guard
+                    let httpResponse = response as? HTTPURLResponse,
+                    let data
+                else {
+                    self.finishWithError(
+                        "Voicebox returned no response.",
+                        generation: generation
+                    )
+                    return
+                }
+
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let responseText = String(
+                        data: data,
+                        encoding: .utf8
+                    ) ?? ""
+
+                    self.finishWithError(
+                        "Voicebox HTTP \(httpResponse.statusCode): \(responseText)",
+                        generation: generation
+                    )
+                    return
+                }
+
+                do {
+                    let result = try JSONDecoder().decode(
+                        SpeakResponse.self,
+                        from: data
+                    )
+
+                    print("Voicebox generation:", result.id)
+
+                    self.pollGeneration(
+                        id: result.id,
+                        attemptsRemaining: 120,
+                        generation: generation
+                    )
+                } catch {
+                    self.finishWithError(
+                        "Could not read Voicebox response: \(error)",
+                        generation: generation
+                    )
+                }
+            }
+        }.resume()
+    }
+
+    // MARK: - Wait for Audio Generation
+
+    private func pollGeneration(
+        id: String,
+        attemptsRemaining: Int,
+        generation: Int
+    ) {
+        guard generation == speechGeneration else { return }
+
+        guard attemptsRemaining > 0 else {
+            finishWithError(
+                "Voicebox audio generation timed out.",
+                generation: generation
+            )
+            return
+        }
+
+        let url = baseURL
+            .appendingPathComponent("generate")
+            .appendingPathComponent(id)
+            .appendingPathComponent("status")
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+
+        session.dataTask(with: request) {
+            [weak self] data, response, error in
+
+            guard let self else { return }
+
+            self.speechQueue.async {
+                guard generation == self.speechGeneration else {
+                    return
+                }
+
+                if let error {
+                    self.finishWithError(
+                        "Could not check Voicebox status: \(error)",
+                        generation: generation
+                    )
+                    return
+                }
+
+                guard
+                    let httpResponse = response as? HTTPURLResponse,
+                    (200..<300).contains(httpResponse.statusCode),
+                    let data,
+                    let responseText = String(
+                        data: data,
+                        encoding: .utf8
+                    )
+                else {
+                    self.finishWithError(
+                        "Invalid Voicebox status response.",
+                        generation: generation
+                    )
+                    return
+                }
+
+                // Voicebox may return Server-Sent Events:
+                // data: {"id":"...","status":"completed",...}
+                let jsonLine = responseText
+                    .components(separatedBy: "\n")
+                    .first {
+                        $0.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).hasPrefix("data:")
+                    }
+
+                guard let jsonLine else {
+                    self.retryPolling(
+                        id: id,
+                        attemptsRemaining: attemptsRemaining,
+                        generation: generation
+                    )
+                    return
+                }
+
+                let json = String(
+                    jsonLine.drop(
+                        while: { $0 != "{" }
+                    )
+                )
+
+                guard let statusData = json.data(using: .utf8) else {
+                    self.finishWithError(
+                        "Could not decode Voicebox status.",
+                        generation: generation
+                    )
+                    return
+                }
+
+                do {
+                    let status = try JSONDecoder().decode(
+                        GenerationStatus.self,
+                        from: statusData
+                    )
+
+                    switch status.status.lowercased() {
+                    case "completed":
+                        self.downloadAudio(
+                            id: id,
+                            generation: generation
+                        )
+
+                    case "failed", "error":
+                        self.finishWithError(
+                            status.error ?? "Voicebox generation failed.",
+                            generation: generation
+                        )
+
+                    default:
+                        self.retryPolling(
+                            id: id,
+                            attemptsRemaining: attemptsRemaining,
+                            generation: generation
+                        )
+                    }
+                } catch {
+                    self.finishWithError(
+                        "Could not decode generation status: \(error)",
+                        generation: generation
+                    )
+                }
+            }
+        }.resume()
+    }
+
+    private func retryPolling(
+        id: String,
+        attemptsRemaining: Int,
+        generation: Int
+    ) {
+        speechQueue.asyncAfter(deadline: .now() + 0.5) {
+            [weak self] in
+
+            guard let self else { return }
+
+            self.pollGeneration(
+                id: id,
+                attemptsRemaining: attemptsRemaining - 1,
+                generation: generation
+            )
+        }
+    }
+
+    // MARK: - Download and Play Audio
+
+    private func downloadAudio(
+        id: String,
+        generation: Int
+    ) {
+        guard generation == speechGeneration else { return }
+
+        let url = baseURL
+            .appendingPathComponent("audio")
+            .appendingPathComponent(id)
+
+        session.dataTask(with: url) {
+            [weak self] data, response, error in
+
+            guard let self else { return }
+
+            self.speechQueue.async {
+                guard generation == self.speechGeneration else {
+                    return
+                }
+
+                if let error {
+                    self.finishWithError(
+                        "Could not download Voicebox audio: \(error)",
+                        generation: generation
+                    )
+                    return
+                }
+
+                guard
+                    let httpResponse = response as? HTTPURLResponse,
+                    (200..<300).contains(httpResponse.statusCode),
+                    let data,
+                    !data.isEmpty
+                else {
+                    self.finishWithError(
+                        "Voicebox returned no playable audio.",
+                        generation: generation
+                    )
+                    return
+                }
+
+                do {
+                    let player = try AVAudioPlayer(data: data)
+                    player.delegate = self
+
+                    guard player.prepareToPlay(), player.play() else {
+                        self.finishWithError(
+                            "macOS could not play the Voicebox audio.",
+                            generation: generation
+                        )
+                        return
+                    }
+
+                    self.audioPlayer = player
+                    print("Playing Bella's voice.")
+                } catch {
+                    self.finishWithError(
+                        "Could not initialize audio playback: \(error)",
+                        generation: generation
+                    )
+                }
+            }
+        }.resume()
+    }
+
+    // MARK: - Stop
 
     func stop() {
-
         speechQueue.async { [weak self] in
-
-            guard let self else {
-                return
-            }
+            guard let self else { return }
 
             self.speechGeneration += 1
+            self.completionHandler = nil
 
-            self.completionHandler =
-                nil
+            self.audioPlayer?.stop()
+            self.audioPlayer = nil
 
-            if self.synthesizer.isSpeaking {
+            print("Voicebox playback stopped.")
+        }
+    }
 
-                self.synthesizer.stopSpeaking(
-                    at: .immediate
-                )
+    // MARK: - Playback Completion
+
+    func audioPlayerDidFinishPlaying(
+        _ player: AVAudioPlayer,
+        successfully flag: Bool
+    ) {
+        speechQueue.async { [weak self] in
+            guard let self else { return }
+
+            self.audioPlayer = nil
+
+            let completion = self.completionHandler
+            self.completionHandler = nil
+
+            DispatchQueue.main.async {
+                completion?()
             }
         }
     }
 
-    // MARK: Clean Text
+    // MARK: - Error Handling
 
-    private func cleanTextForSpeech(
-        _ text: String
-    ) -> String {
+    private func finishWithError(
+        _ message: String,
+        generation: Int
+    ) {
+        guard generation == speechGeneration else { return }
 
+        print("Speech error:", message)
+
+        // Avoid automatically restarting the listening loop on error.
+        completionHandler = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+    }
+
+    // MARK: - Clean Text
+
+    private func cleanTextForSpeech(_ text: String) -> String {
         var result = ""
 
         for scalar in text.unicodeScalars {
+            let value = scalar.value
 
-            let value =
-                scalar.value
-
-            // Emoji / pictographic Unicode ranges.
             let isEmoji =
-                (
-                    value >= 0x1F300 &&
-                    value <= 0x1FAFF
-                )
-                ||
-                (
-                    value >= 0x2600 &&
-                    value <= 0x27BF
-                )
-                ||
-                (
-                    value >= 0x2300 &&
-                    value <= 0x23FF
-                )
-                ||
-                (
-                    value >= 0x2B50 &&
-                    value <= 0x2B55
-                )
+                (value >= 0x1F300 && value <= 0x1FAFF)
+                || (value >= 0x2600 && value <= 0x27BF)
+                || (value >= 0x2300 && value <= 0x23FF)
+                || (value >= 0x2B50 && value <= 0x2B55)
 
             if !isEmoji {
-
-                result.append(
-                    Character(
-                        scalar
-                    )
-                )
+                result.append(Character(scalar))
             }
         }
 
-        // Remove zero-width joiner.
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{200D}",
-                with:
-                    ""
-            )
+        result = result.replacingOccurrences(
+            of: "\u{200D}",
+            with: ""
+        )
 
-        // Remove variation selectors.
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0F}",
-                with:
-                    ""
-            )
+        result = result.replacingOccurrences(
+            of: "\u{FE00}-[\u{FE0F}]",
+            with: "",
+            options: .regularExpression
+        )
 
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE00}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE01}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE02}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE03}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE04}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE05}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE06}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE07}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE08}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE09}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0A}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0B}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0C}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0D}",
-                with:
-                    ""
-            )
-
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\u{FE0E}",
-                with:
-                    ""
-            )
-
-        // Collapse repeated whitespace.
-        result =
-            result.replacingOccurrences(
-                of:
-                    "\\s+",
-                with:
-                    " ",
-                options:
-                    .regularExpression
-            )
+        result = result.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
 
         return result.trimmingCharacters(
-            in:
-                .whitespacesAndNewlines
+            in: .whitespacesAndNewlines
         )
-    }
-}
-
-// MARK: - AVSpeechSynthesizerDelegate
-
-extension SpeechOutputManager:
-    AVSpeechSynthesizerDelegate {
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer:
-            AVSpeechSynthesizer,
-        didFinish utterance:
-            AVSpeechUtterance
-    ) {
-
-        DispatchQueue.main.async { [weak self] in
-
-            guard let self else {
-                return
-            }
-
-            let completion =
-                self.completionHandler
-
-            self.completionHandler =
-                nil
-
-            completion?()
-        }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer:
-            AVSpeechSynthesizer,
-        didCancel utterance:
-            AVSpeechUtterance
-    ) {
-
-        DispatchQueue.main.async { [weak self] in
-
-            guard let self else {
-                return
-            }
-
-            // Cancellation must not cause
-            // OverlayManager to automatically
-            // start listening again.
-            self.completionHandler =
-                nil
-        }
     }
 }

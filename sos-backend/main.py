@@ -62,7 +62,7 @@ def assistant(request: AssistantRequest):
 
         response = client.chat.completions.create(
 
-            model="openrouter/free",
+            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 
             messages=[
                 {
